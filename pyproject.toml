@@ -28,10 +28,10 @@ classifiers = [
   "Topic :: Software Development",
 ]
 dependencies = [
-  "waitress",
-  "Flask",
-  "flask-cors",
-  "flask-jwt-extended",
+  "uvicorn",
+  "fastapi",
+  "python-dotenv",
+  "fastapi-jwt-auth",
   "physrisk-lib>=0.37.0"
 ]
 
@@ -88,3 +88,4 @@ profile = "black"
 [tool.coverage.run]
 omit = ["src/test/*"]
 relative_files = true
+

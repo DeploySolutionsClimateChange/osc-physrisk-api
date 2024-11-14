@@ -1,13 +1,13 @@
-from flask import Blueprint
+from fastapi import APIRouter, FastAPI
 
-from .api import api
+from .api import api_router
 
-main = Blueprint("main", __name__, url_prefix="/")
+main = APIRouter()
 
-# Register all routes or blueprints with the 'main' blueprint.
-main.register_blueprint(api)
+# Register all routes or routers with the 'main' router.
+main.include_router(api_router)
 
 
 @main.get("/")
-def home():
-    return "Hello World!"
+async def home():
+    return {"message": "Hello World!"}

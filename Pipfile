@@ -4,11 +4,11 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-waitress = "*"
-Flask = "*"
-flask-cors = "*"
+uvicorn = "*"
+fastapi = "*"
+python-dotenv = "*"
 physrisk-lib = "==0.30.0"
-flask-jwt-extended = "*"
+fastapi-jwt-auth = "*"
 
 [dev-packages]
 pdm = "*"

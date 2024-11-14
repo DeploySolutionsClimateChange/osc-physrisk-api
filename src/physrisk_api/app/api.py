@@ -3,47 +3,46 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from dependency_injector.wiring import Provide, inject
-from flask import Blueprint, abort, current_app, jsonify, request
-from flask.helpers import make_response
-from flask_jwt_extended import create_access_token, get_jwt, get_jwt_identity, unset_jwt_cookies, verify_jwt_in_request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
+from fastapi_jwt_auth import AuthJWT
 from jwt import ExpiredSignatureError
 from physrisk.container import Container
 from physrisk.requests import Requester
 
-api = Blueprint("api", __name__, url_prefix="/api")
+api_router = APIRouter(prefix="/api")
 
-
-@api.post("/token")
-def create_token():
-    email = request.json.get("email", None)
-    password = request.json.get("password", None)
+@api_router.post("/token")
+def create_token(request: Request, Authorize: AuthJWT = Depends()):
+    body = request.json()
+    email = body.get("email", None)
+    password = body.get("password", None)
     if email != "test" or password != os.environ["OSC_TEST_USER_KEY"]:
-        return {"msg": "Wrong email or password"}, 401
+        raise HTTPException(status_code=401, detail="Wrong email or password")
 
-    access_token = create_access_token(identity=email, additional_claims={"data_access": "osc"})
+    access_token = Authorize.create_access_token(subject=email, user_claims={"data_access": "osc"})
     response = {"access_token": access_token}
     return response
 
-
-@api.post("/get_hazard_data")
-@api.post("/get_hazard_data_availability")
-@api.post("/get_asset_exposure")
-@api.post("/get_asset_impact")
+@api_router.post("/get_hazard_data")
+@api_router.post("/get_hazard_data_availability")
+@api_router.post("/get_asset_exposure")
+@api_router.post("/get_asset_impact")
 @inject
-def hazard_data(requester: Requester = Provide[Container.requester]):
+def hazard_data(request: Request, requester: Requester = Provide[Container.requester], Authorize: AuthJWT = Depends()):
     """Retrieve data from physrisk library based on request URL and JSON data."""
 
-    log = current_app.logger
-    request_id = os.path.basename(request.path)
-    request_dict = request.json
+    log = logging.getLogger("uvicorn")
+    request_id = os.path.basename(request.url.path)
+    request_dict = request.json()
 
     log.debug(f"Received '{request_id}' request")
 
     try:
         try:
-            verify_jwt_in_request(optional=True)
+            Authorize.jwt_optional()
             # if no JWT, default to 'public' access level
-            data_access: str = get_jwt().get("data_access", "osc")
+            data_access: str = Authorize.get_jwt_subject() or "osc"
         except ExpiredSignatureError:
             log.info("Signature has expired")
             data_access = "osc"
@@ -56,7 +55,7 @@ def hazard_data(requester: Requester = Provide[Container.requester]):
         resp_data = json.loads(resp_data)
     except Exception as exc_info:
         log.error(f"Invalid '{request_id}' request", exc_info=exc_info)
-        abort(400)
+        raise HTTPException(status_code=400, detail="Invalid request")
 
     # Response object should hold a list of items, models or measures.
     # If not, none were found matching the request's criteria.
@@ -67,35 +66,34 @@ def hazard_data(requester: Requester = Provide[Container.requester]):
         or resp_data.get("risk_measures")
     ):
         log.error(f"No results returned for '{request_id}' request")
-        abort(404)
+        raise HTTPException(status_code=404, detail="No results found")
 
     return resp_data
 
-
-@api.get("/images/<path:resource>.<format>")
-@api.get("/tiles/<path:resource>/<z>/<x>/<y>.<format>")
+@api_router.get("/images/{resource}.{format}")
+@api_router.get("/tiles/{resource}/{z}/{x}/{y}.{format}")
 @inject
-def get_image(resource, x=None, y=None, z=None, format="png", requester: Requester = Provide[Container.requester]):
+def get_image(resource: str, x: int = None, y: int = None, z: int = None, format: str = "png", requester: Requester = Provide[Container.requester], Authorize: AuthJWT = Depends()):
     """Request that physrisk converts an array to image.
     In the tiled form of the request will return the requested tile if an array pyramid exists; otherwise an
     exception is thrown.
     If tiles are not specified then a whole-aray image is created. This is  intended for small arrays,
     say <~ 1500x1500 pixels. Otherwise we use tiled form of request or Mapbox to host tilesets.
     """
-    log = current_app.logger
+    log = logging.getLogger("uvicorn")
     log.info(f"Creating raster image for {resource}.")
-    request_id = os.path.basename(request.path)
-    min_value_arg = request.args.get("minValue")
+    request_id = os.path.basename(resource)
+    min_value_arg = request.query_params.get("minValue")
     min_value = float(min_value_arg) if min_value_arg is not None else None
-    max_value_arg = request.args.get("maxValue")
+    max_value_arg = request.query_params.get("maxValue")
     max_value = float(max_value_arg) if max_value_arg is not None else None
-    colormap = request.args.get("colormap")
-    scenario_id = request.args.get("scenarioId")
-    year = int(request.args.get("year"))  # type:ignore
+    colormap = request.query_params.get("colormap")
+    scenario_id = request.query_params.get("scenarioId")
+    year = int(request.query_params.get("year"))  # type:ignore
     try:
-        verify_jwt_in_request(optional=True)
+        Authorize.jwt_optional()
         # if no JWT, default to 'osc' access level
-        data_access: str = get_jwt().get("data_access", "osc")
+        data_access: str = Authorize.get_jwt_subject() or "osc"
     except Exception as exc_info:
         log.warning(f"No JWT for '{request_id}' request", exc_info=exc_info)
         # 'public' or 'osc'
@@ -113,60 +111,55 @@ def get_image(resource, x=None, y=None, z=None, format="png", requester: Request
             "min_value": min_value,
         }
     )
-    response = make_response(image_binary)
-    response.headers.set("Content-Type", "image/png")
-    return response
+    return Response(content=image_binary, media_type="image/png")
 
-
-@api.get("/reset")
+@api_router.get("/reset")
 @inject
 def reset(container: Container = Provide[Container]):
     # container.requester.reset()
     container.reset_singletons()
     return "Reset successful"
 
-
-@api.after_request
-def refresh_expiring_jwts(response):
+@api_router.middleware("http")
+async def refresh_expiring_jwts(request: Request, call_next):
+    response = await call_next(request)
     if request.method == "OPTIONS":
         return response
     try:
-        verify_jwt_in_request(optional=True)
-        jwt = get_jwt()
+        Authorize = AuthJWT(request)
+        Authorize.jwt_optional()
+        jwt = Authorize.get_raw_jwt()
         if "exp" not in jwt:
             return response
         exp_timestamp = jwt["exp"]
-        RuntimeError
         now = datetime.now(timezone.utc)
         target_timestamp = datetime.timestamp(now + timedelta(minutes=30))
         if target_timestamp > exp_timestamp:
-            access_token = create_access_token(identity=get_jwt_identity())
-            data = response.get_json()
-            if type(data) is dict:
+            access_token = Authorize.create_access_token(subject=Authorize.get_jwt_subject())
+            data = response.body
+            if isinstance(data, dict):
                 data["access_token"] = access_token
-                response.data = json.dumps(data)
+                response = JSONResponse(content=data)
         return response
     except ExpiredSignatureError:
-        log = current_app.logger
+        log = logging.getLogger("uvicorn")
         log.info("Signature has expired")
         return response
     except Exception as exc_info:
-        log = current_app.logger
+        log = logging.getLogger("uvicorn")
         log.warning("Cannot refresh JWT", exc_info=exc_info)
         # Case where there is not a valid JWT. Just return the original response
         return response
 
-
-@api.post("/logout")
-def logout():
-    response = jsonify({"msg": "logout successful"})
-    unset_jwt_cookies(response)
+@api_router.post("/logout")
+def logout(Authorize: AuthJWT = Depends()):
+    response = JSONResponse(content={"msg": "logout successful"})
+    Authorize.unset_jwt_cookies(response)
     return response
 
-
-@api.post("/profile")
-def profile():
-    verify_jwt_in_request()
-    identity = get_jwt_identity()
+@api_router.post("/profile")
+def profile(Authorize: AuthJWT = Depends()):
+    Authorize.jwt_required()
+    identity = Authorize.get_jwt_subject()
     response_body = {"id": identity}
     return response_body
